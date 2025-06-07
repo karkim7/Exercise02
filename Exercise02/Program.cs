@@ -1,48 +1,49 @@
 ﻿using System;
-using System.Security.Cryptography;
+using System.IO;
 using System.Text;
 using System.Xml.Linq;
-using System.IO;
+using System.Security.Cryptography;
 
 class Program
 {
     static void Main()
     {
-        string filePath = "customers.xml";
+        // Original values
+        string name = "Bob Smith";
+        string creditCard = "1234-5678-9012-3456";
+        string password = "Pa$$w0rd";
 
-        // Sample XML file
-        string xmlContent = @"<?xml version=""1.0"" encoding=""utf-8""?>
-<customers>
-  <customer>
-    <name>Bob Smith</name>
-    <creditcard>1234-5678-9012-3456</creditcard>
-    <password>Pa$$w0rd</password>
-  </customer>
-</customers>";
-        File.WriteAllText(filePath, xmlContent);
+        // Secret key (must be 16 characters for AES-128)
+        string secretKey = "thisisasecretkey!";
 
-        XDocument doc = XDocument.Load(filePath);
-        string key = "thisisasecretkey!"; // 16 characters = 128-bit key
+        // Encrypt credit card
+        string encryptedCreditCard = Encrypt(creditCard, secretKey);
 
-        foreach (var customer in doc.Descendants("customer"))
-        {
-            string creditCard = customer.Element("creditcard").Value;
-            string password = customer.Element("password").Value;
+        // Hash password with salt
+        string salt = GenerateSalt();
+        string hashedPassword = HashPassword(password, salt);
 
-            // Encrypt credit card
-            string encryptedCard = Encrypt(creditCard, key);
-            customer.Element("creditcard").Value = encryptedCard;
+        // Save to protected XML
+        XElement customer = new XElement("customer",
+            new XElement("name", name),
+            new XElement("creditcard", encryptedCreditCard),
+            new XElement("password", hashedPassword),
+            new XElement("salt", salt)
+        );
 
-            // Salt and hash password
-            string hashedPassword = HashPasswordWithSalt(password);
-            customer.Element("password").Value = hashedPassword;
-        }
+        XElement root = new XElement("customers", customer);
+        root.Save("customers_protected.xml");
 
-        doc.Save("customers_protected.xml");
-        Console.WriteLine("Protected data saved to customers_protected.xml");
+        Console.WriteLine("Encrypted & hashed data saved to customers_protected.xml");
+
+        // --------------------------
+        // Decrypt the credit card
+        // --------------------------
+        string decryptedCard = Decrypt(encryptedCreditCard, secretKey);
+        Console.WriteLine("Decrypted Credit Card: " + decryptedCard);
     }
 
-    // AES Encryption (Symmetric)
+    // Encrypt using AES
     static string Encrypt(string plainText, string key)
     {
         byte[] iv = new byte[16];
@@ -55,34 +56,54 @@ class Program
 
             ICryptoTransform encryptor = aes.CreateEncryptor(aes.Key, aes.IV);
 
-            using MemoryStream ms = new();
-            using CryptoStream cs = new(ms, encryptor, CryptoStreamMode.Write);
+            using (MemoryStream ms = new())
+            using (CryptoStream cs = new(ms, encryptor, CryptoStreamMode.Write))
             using (StreamWriter sw = new(cs))
             {
                 sw.Write(plainText);
+                sw.Close();
+                encrypted = ms.ToArray();
             }
-
-            encrypted = ms.ToArray();
         }
 
         return Convert.ToBase64String(encrypted);
     }
 
-    // SHA256 + Salt
-    static string HashPasswordWithSalt(string password)
+    // Decrypt AES encrypted data
+    static string Decrypt(string encryptedText, string key)
     {
-        byte[] salt = new byte[16];
+        byte[] iv = new byte[16];
+        byte[] buffer = Convert.FromBase64String(encryptedText);
+
+        using (Aes aes = Aes.Create())
+        {
+            aes.Key = Encoding.UTF8.GetBytes(key.PadRight(16).Substring(0, 16));
+            aes.IV = iv;
+
+            ICryptoTransform decryptor = aes.CreateDecryptor(aes.Key, aes.IV);
+
+            using MemoryStream ms = new(buffer);
+            using CryptoStream cs = new(ms, decryptor, CryptoStreamMode.Read);
+            using StreamReader reader = new(cs);
+            return reader.ReadToEnd();
+        }
+    }
+
+    // Hash password with salt using SHA256
+    static string HashPassword(string password, string salt)
+    {
+        using SHA256 sha256 = SHA256.Create();
+        byte[] inputBytes = Encoding.UTF8.GetBytes(password + salt);
+        byte[] hashBytes = sha256.ComputeHash(inputBytes);
+        return Convert.ToBase64String(hashBytes);
+    }
+
+    // Generate a random salt string
+    static string GenerateSalt()
+    {
+        byte[] saltBytes = new byte[16];
         using RandomNumberGenerator rng = RandomNumberGenerator.Create();
-        rng.GetBytes(salt);
-
-        byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
-        byte[] saltedPassword = new byte[salt.Length + passwordBytes.Length];
-        Buffer.BlockCopy(salt, 0, saltedPassword, 0, salt.Length);
-        Buffer.BlockCopy(passwordBytes, 0, saltedPassword, salt.Length, passwordBytes.Length);
-
-        using SHA256 sha = SHA256.Create();
-        byte[] hash = sha.ComputeHash(saltedPassword);
-
-        return $"{Convert.ToBase64String(salt)}:{Convert.ToBase64String(hash)}";
+        rng.GetBytes(saltBytes);
+        return Convert.ToBase64String(saltBytes);
     }
 }
